@@ -287,3 +287,26 @@ confirm_action() {
 validate_positive_int() {
     [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ]
 }
+
+# -----------------------------------------------------------------------------
+# reject_options: Refuse option arguments for a command that takes none
+# Usage: reject_options <command> "$@"
+# -h/--help prints the caller's usage and exits 0; any other argument that
+# starts with '-' exits with EXIT_INVALID_ARGS before the command does
+# anything, so a mistyped flag never becomes a path, a name or a real run.
+# -----------------------------------------------------------------------------
+reject_options() {
+    local cmd="$1"
+    shift
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help)
+                usage 0
+                ;;
+            -*)
+                die "$cmd: unknown option '$arg'" $EXIT_INVALID_ARGS
+                ;;
+        esac
+    done
+}

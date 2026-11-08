@@ -45,6 +45,12 @@ parse_prune_options() {
                 PRUNE_MODE="all"
                 shift
                 ;;
+            -h|--help)
+                usage 0
+                ;;
+            -*)
+                die "prune: unknown option '$1'" $EXIT_INVALID_ARGS
+                ;;
             *)
                 PRUNE_REMAINING_ARGS+=("$1")
                 shift
