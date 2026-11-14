@@ -1,7 +1,8 @@
 # common.sh - shared functions of archivectl and snapshotctl
 #
 # Sourced by each tool's dispatcher, which sets PROG (the tool's name),
-# CONFIG (its configuration file) and SCRIPT_PATH, and defines usage.
+# CONFIG (its configuration file) and SCRIPT_PATH, and defines usage; each
+# command's module defines show_help, its own help.
 
 readonly EXIT_ERROR=1
 readonly EXIT_INVALID_ARGS=2
@@ -27,17 +28,54 @@ say() {
     fi
 }
 
-# safe_name PATH: PATH as one file name, % written %25, / %2F and a newline
-# %0A, so that two paths never share a name; a name longer than 199 bytes
-# becomes its first 135 bytes, ~ and the SHA-256 of PATH, 200 bytes, which
-# leaves room under NAME_MAX for a suffix and no short name can equal
+# safe_name PATH: PATH as one file name that no other path shares: the
+# leading / dropped, every other / written __, % as %25, a newline as %0A,
+# and an _ that begins or ends a component or stands next to another _ as
+# %5F, so that __ always stands for a /; / itself is %2F, and a ! that
+# begins the name %21, so that no name is one old_safe_name gives. A name longer
+# than 199 bytes becomes its first 135 bytes, ~ and the SHA-256 of PATH,
+# 200 bytes, which leaves room under NAME_MAX for a suffix and no short
+# name can equal.
 safe_name() {
+    local LC_ALL=C path="${1#/}" name="" c i
+    [ -n "$path" ] || name=%2F
+    for ((i = 0; i < ${#path}; i++)); do
+        c="${path:i:1}"
+        case "$c" in
+            /) name+=__ ;;
+            %) name+=%25 ;;
+            $'\n') name+=%0A ;;
+            !) if [ "$i" -eq 0 ]; then name+=%21; else name+=!; fi ;;
+            _)
+                if [ "$i" -eq 0 ] || [ "$i" -eq $((${#path} - 1)) ] ||
+                   [[ "${path:i-1:1}" == [/_] || "${path:i+1:1}" == [/_] ]]; then
+                    name+=%5F
+                else
+                    name+=_
+                fi
+                ;;
+            *) name+="$c" ;;
+        esac
+    done
+    shorten "$name" "$1"
+}
+
+# encoded_name PATH: the name earlier versions gave PATH, % written %25, /
+# %2F and a newline %0A, shortened as safe_name shortens
+encoded_name() {
     local LC_ALL=C name
     name="${1//%/%25}"
     name="${name//\//%2F}"
     name="${name//$'\n'/%0A}"
+    shorten "$name" "$1"
+}
+
+# shorten NAME PATH: NAME, or past 199 bytes its first 135 bytes, ~ and the
+# SHA-256 of PATH
+shorten() {
+    local LC_ALL=C name="$1"
     if [ ${#name} -gt 199 ]; then
-        name="${name:0:135}~$(printf '%s' "$1" | sha256sum | cut -c1-64)"
+        name="${name:0:135}~$(printf '%s' "$2" | sha256sum | cut -c1-64)"
     fi
     printf '%s\n' "$name"
 }
@@ -48,17 +86,31 @@ old_safe_name() {
     printf '%s\n' "$1" | sed 's/!/!!/g; s|/|!|g'
 }
 
-# storage_for ROOT DIR: the storage path under ROOT for the source DIR; dies
-# when ROOT holds storage under the old name of DIR, which may be DIR's own
-# or another directory's
+# storage_for ROOT DIR: the storage path under ROOT for the source DIR,
+# named by safe_name, or by encoded_name when only that one exists; dies
+# when ROOT holds storage under the name hlinkctl and dedupctl gave DIR,
+# which may be DIR's own or another directory's
 storage_for() {
-    local new old
+    local new encoded old
     new="$1/$(safe_name "$2")"
+    encoded="$1/$(encoded_name "$2")"
     old="$1/$(old_safe_name "$2")"
-    if [ -e "$old" ] && [ ! -e "$new" ]; then
+    if [ ! -e "$new" ] && [ -e "$encoded" ]; then
+        new="$encoded"
+    elif [ ! -e "$new" ] && [ -e "$old" ]; then
         die "$old exists, named the old way, under which two directories can share one name. If it holds the backups of $2, set it in $2/$CONFIG by hand; if not, move it away."
     fi
     printf '%s\n' "$new"
+}
+
+# default_root KIND OLD: where storage goes when the environment names no
+# root, /data/backup/KIND when /data is mounted, else OLD
+default_root() {
+    if mountpoint -q /data 2>/dev/null; then
+        printf '%s\n' "/data/backup/$1"
+    else
+        printf '%s\n' "$2"
+    fi
 }
 
 # open_log: log this run to $XDG_STATE_HOME/PROG/<REPO_ROOT as a name>.log,
@@ -135,30 +187,15 @@ build_exclude_params() {
     done
 }
 
-# reject_options CMD ARG...: -h prints the usage, any other argument is refused
+# reject_options CMD ARG...: -h prints the command's help, any other argument is refused
 reject_options() {
     local cmd="$1"
     shift
     case "${1:-}" in
         "") ;;
-        -h|--help) usage 0 ;;
+        -h|--help) show_help ;;
         *) die "$cmd takes no arguments: '$1'" $EXIT_INVALID_ARGS ;;
     esac
-}
-
-# parse_dry_run CMD ARG...: DRY_RUN=true on -n, any other argument is refused
-parse_dry_run() {
-    local cmd="$1"
-    shift
-    DRY_RUN=false
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            -n|--dry-run) DRY_RUN=true ;;
-            -h|--help) usage 0 ;;
-            *) die "$cmd: unknown argument '$1'" $EXIT_INVALID_ARGS ;;
-        esac
-        shift
-    done
 }
 
 # parse_select_options ARG...: SELECT_OLDER and SELECT_NEWER in days,
@@ -174,23 +211,24 @@ parse_select_options() {
                 printf -v "SELECT_${name^^}" '%s' "$2"
                 shift 2
                 ;;
-            -h|--help) usage 0 ;;
+            -h|--help) show_help ;;
             *) die "list: unknown argument '$1'" $EXIT_INVALID_ARGS ;;
         esac
     done
 }
 
-# select_records: of the records "id<TAB>date..." read oldest first, print
-# those older than SELECT_OLDER and newer than SELECT_NEWER days, then
-# only the first SELECT_FIRST and the last SELECT_LAST of them
+# select_records: of the records "id<TAB>date..." read oldest first, the
+# date YYYY-MM-DD HH:MM:SS, print
+# those older than SELECT_OLDER and newer than SELECT_NEWER days, then only
+# the first SELECT_FIRST and the last SELECT_LAST of them
 select_records() {
     local now older="" newer=""
     now=$(date +%s)
     if [ -n "$SELECT_OLDER" ]; then
-        older=$(date -d "@$((now - SELECT_OLDER * 86400))" +%Y-%m-%dT%H:%M:%S)
+        older=$(date -d "@$((now - SELECT_OLDER * 86400))" '+%Y-%m-%d %H:%M:%S')
     fi
     if [ -n "$SELECT_NEWER" ]; then
-        newer=$(date -d "@$((now - SELECT_NEWER * 86400))" +%Y-%m-%dT%H:%M:%S)
+        newer=$(date -d "@$((now - SELECT_NEWER * 86400))" '+%Y-%m-%d %H:%M:%S')
     fi
     awk -F '\t' -v older="$older" -v newer="$newer" -v first="$SELECT_FIRST" -v last="$SELECT_LAST" '
         (older == "" || $2 < older) && (newer == "" || $2 > newer) { kept[++n] = $0 }
@@ -202,20 +240,19 @@ select_records() {
         }'
 }
 
-# read_ids: IDS, the first field of every line on stdin that is not blank, once each
+# read_ids [ID...]: IDS, the IDs given, or else the first field of every
+# line on stdin that is not blank, once each; ids given while input is
+# piped in, or neither, the input being a terminal, end the run with status 2
 read_ids() {
+    if [ $# -gt 0 ]; then
+        [ ! -p /dev/stdin ] && [ ! -f /dev/stdin ] ||
+            die "delete takes the ids as arguments or on standard input, not both." $EXIT_INVALID_ARGS
+        mapfile -t IDS < <(printf '%s\n' "$@" | awk '!seen[$0]++')
+        return 0
+    fi
+    [ ! -t 0 ] ||
+        die "usage: $PROG delete [-n] <id>..., or the ids on standard input, as in: $PROG list --older 30 | $PROG delete -n" $EXIT_INVALID_ARGS
     mapfile -t IDS < <(cut -f1 | awk 'NF && !seen[$0]++')
-}
-
-# require_known ID...: die unless every ID is a line of stdin, compared byte by byte
-require_known() {
-    local known id
-    local -a missing=()
-    known=$(cat)
-    for id in "$@"; do
-        LC_ALL=C grep -aqxF -e "$id" <<<"$known" || missing+=("$id")
-    done
-    [ ${#missing[@]} -eq 0 ] || die "no such id: ${missing[*]}"
 }
 
 # An awk function for every record printer: esc writes a backslash, tab or
@@ -230,6 +267,11 @@ function esc(s,    out, i, c) {
     }
     return out
 }'
+
+# escaped TEXT: TEXT written the way esc writes a path in a record
+escaped() {
+    TEXT="$1" LC_ALL=C awk "$AWK_ESCAPE"'BEGIN { print esc(ENVIRON["TEXT"]) }'
+}
 
 # An awk program, run with LC_ALL=C, that turns the lines of rsync
 # --8-bit-output --out-format="%i %n" into records "path<TAB>change";
