@@ -1,53 +1,50 @@
-# common.sh - Shared utilities for dedupctl and hlinkctl
+# common.sh - shared functions of archivectl and snapshotctl
 #
-# This file is sourced by the main scripts and command modules.
-# It provides common utility functions used across both tools.
+# Sourced by each tool's dispatcher, which sets PROG (the tool's name),
+# CONFIG (its configuration file) and SCRIPT_PATH, and defines usage.
 
-# Exit codes
-readonly EXIT_SUCCESS=0
 readonly EXIT_ERROR=1
 readonly EXIT_INVALID_ARGS=2
 readonly EXIT_CONFIG_ERROR=3
-readonly EXIT_OPERATION_FAILED=4
 
-# Default excludes for backups
+# Patterns left out of a backup when the configuration sets no EXCLUDES
 readonly DEFAULT_EXCLUDES=(".cache" "tmp" "__pycache__")
 
-# Config file names
-readonly CONFIG_BORG=".borgbackup"
-readonly CONFIG_RSNAP=".myrsyncbackup"
+# Set by open_log only, so that a dry run never writes a log
+LOG_FILE=""
 
-# Cleanup registry for trap handlers
-_CLEANUP_ITEMS=()
-
-# -----------------------------------------------------------------------------
-# die: Print error message to stderr and exit
-# Usage: die "error message" [exit_code]
-# -----------------------------------------------------------------------------
+# die MESSAGE [STATUS]: print MESSAGE on stderr and exit with STATUS (1)
 die() {
-    echo "Error: $1" >&2
+    echo "$PROG: $1" >&2
     exit "${2:-$EXIT_ERROR}"
 }
 
-# -----------------------------------------------------------------------------
-# warn: Print warning message to stderr
-# Usage: warn "warning message"
-# -----------------------------------------------------------------------------
-warn() {
-    echo "Warning: $1" >&2
+# say MESSAGE: print MESSAGE on stderr and append it to LOG_FILE, if open
+say() {
+    echo "$PROG: $1" >&2
+    if [ -n "$LOG_FILE" ]; then
+        echo "$(date '+%Y-%m-%dT%H:%M:%S') $1" >>"$LOG_FILE"
+    fi
 }
 
-# -----------------------------------------------------------------------------
-# find_repo_root: Search upward from a given directory for a config file
-# Usage: find_repo_root <start_dir> <config_file>
-# Returns: Prints the repository root path; returns 0 on success, 1 on failure
-# -----------------------------------------------------------------------------
+# safe_name PATH: PATH as one file name, every ! doubled and every / a !
+safe_name() {
+    printf '%s\n' "$1" | sed 's/!/!!/g; s|/|!|g'
+}
+
+# open_log: log this run to $XDG_STATE_HOME/PROG/<REPO_ROOT as a name>.log
+open_log() {
+    local dir="${XDG_STATE_HOME:-$HOME/.local/state}/$PROG"
+    mkdir -p "$dir"
+    LOG_FILE="$dir/$(safe_name "$REPO_ROOT").log"
+}
+
+# find_repo_root DIR NAME: the nearest directory at or above DIR holding NAME
 find_repo_root() {
-    local dir config_file
+    local dir
     dir=$(realpath "$1")
-    config_file="$2"
-    while [ "$dir" != "/" ]; do
-        if [ -f "$dir/$config_file" ]; then
+    while [ "$dir" != / ]; do
+        if [ -f "$dir/$2" ]; then
             echo "$dir"
             return 0
         fi
@@ -56,257 +53,147 @@ find_repo_root() {
     return 1
 }
 
-# -----------------------------------------------------------------------------
-# find_parent_repo: Search upward from parent of given dir for a config file
-# Usage: find_parent_repo <current_repo_dir> <config_file>
-# Returns: Prints the parent repository path; returns 0 on success, 1 on failure
-# -----------------------------------------------------------------------------
-find_parent_repo() {
-    local current_repo parent_dir config_file
-    current_repo=$(realpath "$1")
-    config_file="$2"
-    parent_dir=$(dirname "$current_repo")
-    while [ "$parent_dir" != "/" ]; do
-        if [ -f "$parent_dir/$config_file" ]; then
-            echo "$parent_dir"
-            return 0
-        fi
-        parent_dir=$(dirname "$parent_dir")
-    done
-    return 1
-}
-
-# -----------------------------------------------------------------------------
-# require_config: Source config file and validate required variables
-# Usage: require_config <config_file> <var1> [var2] ...
-# Exits with error if config file missing or required variables not defined
-# -----------------------------------------------------------------------------
+# require_config FILE VAR...: source FILE, which must set every VAR
 require_config() {
-    local config_file="$1"
+    local file="$1" var
     shift
-
-    if [ ! -f "$config_file" ]; then
-        die "Configuration file '$config_file' not found." $EXIT_CONFIG_ERROR
-    fi
-
-    source "$config_file"
-
+    [ -f "$file" ] || die "configuration file '$file' not found." $EXIT_CONFIG_ERROR
+    source "$file"
     for var in "$@"; do
-        if [ -z "${!var:-}" ]; then
-            die "Invalid config file. It must define $var." $EXIT_CONFIG_ERROR
-        fi
+        [ -n "${!var:-}" ] || die "$file must set $var." $EXIT_CONFIG_ERROR
     done
 }
 
-# -----------------------------------------------------------------------------
-# select_from_list: Interactive selection from a numbered list
-# Usage: select_from_list <prompt> <array_name> [<item_type>]
-# Sets: SELECTED_INDEX (0-based) and SELECTED_VALUE on success
-# Returns: 0 on success, 1 on empty list or invalid selection
-# -----------------------------------------------------------------------------
-select_from_list() {
-    local prompt="$1"
-    local -n items_ref="$2"
-    local item_type="${3:-item}"
-    local i=1
-
-    if [ ${#items_ref[@]} -eq 0 ]; then
-        echo "No ${item_type}s available."
-        return 1
-    fi
-
-    for item in "${items_ref[@]}"; do
-        echo "  $i) $item"
-        ((i++))
-    done
-
-    local choice
-    read -rp "$prompt" choice
-
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#items_ref[@]}" ]; then
-        echo "Invalid selection."
-        return 1
-    fi
-
-    SELECTED_INDEX=$((choice - 1))
-    SELECTED_VALUE="${items_ref[$SELECTED_INDEX]}"
-    return 0
+# enter_repo VAR...: change into REPO_ROOT, the nearest directory at or
+# above this one holding CONFIG, and read CONFIG, which must set every VAR
+enter_repo() {
+    REPO_ROOT=$(find_repo_root "$(pwd)" "$CONFIG") ||
+        die "no $CONFIG in the current directory or its parents."
+    cd "$REPO_ROOT"
+    require_config "$CONFIG" "$@"
 }
 
-# -----------------------------------------------------------------------------
-# select_multiple_from_list: Interactive selection of multiple items
-# Usage: select_multiple_from_list <prompt> <array_name> [<item_type>]
-# Sets: SELECTED_INDICES (array of 0-based indices) on success
-# Returns: 0 on success, 1 on empty list or invalid selection
-# -----------------------------------------------------------------------------
-select_multiple_from_list() {
-    local prompt="$1"
-    local -n items_ref="$2"
-    local item_type="${3:-item}"
-    local i=1 total="${#items_ref[@]}"
-
-    if [ "$total" -eq 0 ]; then
-        echo "No ${item_type}s available."
-        return 1
-    fi
-
-    for item in "${items_ref[@]}"; do
-        echo "  $i) $item"
-        ((i++))
-    done
-
-    local selection
-    read -rp "$prompt" selection
-
-    # Handle 'all' selection
-    if [ "$selection" = "all" ]; then
-        SELECTED_INDICES=()
-        for (( i = 0; i < total; i++ )); do
-            SELECTED_INDICES+=("$i")
-        done
-        return 0
-    fi
-
-    # Parse space-separated indices
-    local indices=($selection)
-    SELECTED_INDICES=()
-
-    for index in "${indices[@]}"; do
-        if ! [[ "$index" =~ ^[0-9]+$ ]]; then
-            echo "Invalid input: '$index' is not a number."
-            return 1
-        fi
-        if [ "$index" -lt 1 ] || [ "$index" -gt "$total" ]; then
-            echo "Invalid selection: $index is out of range (1-$total)."
-            return 1
-        fi
-        SELECTED_INDICES+=($((index - 1)))
-    done
-
-    return 0
-}
-
-# -----------------------------------------------------------------------------
-# build_exclude_params: Build exclusion parameters for backup tools
-# Usage: build_exclude_params <tool_type> [excludes_array_name]
-# Sets: EXCLUDE_PARAMS array with properly formatted exclude flags
-# tool_type: "borg" or "rsync"
-# -----------------------------------------------------------------------------
+# build_exclude_params borg|rsync: EXCLUDE_PARAMS from EXCLUDES, else DEFAULT_EXCLUDES
 build_exclude_params() {
-    local tool_type="$1"
-    local excludes_var="${2:-}"
-    EXCLUDE_PARAMS=()
-
-    local -a excludes
-    if [ -n "$excludes_var" ] && declare -p "$excludes_var" &>/dev/null; then
-        local -n excludes_ref="$excludes_var"
-        excludes=("${excludes_ref[@]}")
-    elif declare -p EXCLUDES &>/dev/null 2>&1; then
-        excludes=("${EXCLUDES[@]}")
-    else
-        excludes=("${DEFAULT_EXCLUDES[@]}")
+    local pattern
+    local -a patterns=("${DEFAULT_EXCLUDES[@]}")
+    if declare -p EXCLUDES &>/dev/null; then
+        patterns=("${EXCLUDES[@]}")
     fi
-
-    case "$tool_type" in
-        borg)
-            for ex in "${excludes[@]}"; do
-                EXCLUDE_PARAMS+=("--exclude" "$ex")
-            done
-            ;;
-        rsync)
-            for ex in "${excludes[@]}"; do
-                EXCLUDE_PARAMS+=("--exclude=$ex")
-            done
-            ;;
-        *)
-            die "Unknown tool type: $tool_type" $EXIT_INVALID_ARGS
-            ;;
-    esac
-}
-
-# -----------------------------------------------------------------------------
-# parse_timestamp: Convert backup timestamp format to epoch seconds
-# Usage: parse_timestamp "2024-01-15_10:30:00"
-# Returns: Epoch seconds, or 0 if parsing fails
-# -----------------------------------------------------------------------------
-parse_timestamp() {
-    local timestamp="$1"
-    local formatted
-    formatted=$(echo "$timestamp" | tr '_' ' ')
-    date -d "$formatted" +%s 2>/dev/null || echo 0
-}
-
-# -----------------------------------------------------------------------------
-# register_cleanup: Register a path for cleanup on exit
-# Usage: register_cleanup "/path/to/temp/dir"
-# -----------------------------------------------------------------------------
-register_cleanup() {
-    _CLEANUP_ITEMS+=("$1")
-}
-
-# -----------------------------------------------------------------------------
-# run_cleanup: Execute cleanup of registered items
-# Usage: Called automatically by trap, or manually
-# -----------------------------------------------------------------------------
-run_cleanup() {
-    for item in "${_CLEANUP_ITEMS[@]}"; do
-        if [ -d "$item" ]; then
-            rm -rf "$item" 2>/dev/null || true
-        elif [ -f "$item" ]; then
-            rm -f "$item" 2>/dev/null || true
-        fi
+    EXCLUDE_PARAMS=()
+    for pattern in "${patterns[@]}"; do
+        case "$1" in
+            borg) EXCLUDE_PARAMS+=(--exclude "$pattern") ;;
+            rsync) EXCLUDE_PARAMS+=(--exclude="$pattern") ;;
+        esac
     done
-    _CLEANUP_ITEMS=()
 }
 
-# -----------------------------------------------------------------------------
-# setup_cleanup_trap: Set up EXIT trap for automatic cleanup
-# Usage: setup_cleanup_trap
-# -----------------------------------------------------------------------------
-setup_cleanup_trap() {
-    trap run_cleanup EXIT
-}
-
-# -----------------------------------------------------------------------------
-# confirm_action: Prompt user for yes/no confirmation
-# Usage: confirm_action "Do you want to proceed"
-# Returns: 0 if confirmed (y/Y), 1 otherwise
-# -----------------------------------------------------------------------------
-confirm_action() {
-    local prompt="$1"
-    local ans
-    read -rp "${prompt} [yN]? " ans
-    [[ "$ans" =~ ^[Yy]$ ]]
-}
-
-# -----------------------------------------------------------------------------
-# validate_positive_int: Check if value is a positive integer
-# Usage: validate_positive_int "$value" || die "Invalid number"
-# Returns: 0 if valid positive integer, 1 otherwise
-# -----------------------------------------------------------------------------
-validate_positive_int() {
-    [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ]
-}
-
-# -----------------------------------------------------------------------------
-# reject_options: Refuse option arguments for a command that takes none
-# Usage: reject_options <command> "$@"
-# -h/--help prints the caller's usage and exits 0; any other argument that
-# starts with '-' exits with EXIT_INVALID_ARGS before the command does
-# anything, so a mistyped flag never becomes a path, a name or a real run.
-# -----------------------------------------------------------------------------
+# reject_options CMD ARG...: -h prints the usage, any other argument is refused
 reject_options() {
     local cmd="$1"
     shift
-    local arg
-    for arg in "$@"; do
-        case "$arg" in
-            -h|--help)
-                usage 0
+    case "${1:-}" in
+        "") ;;
+        -h|--help) usage 0 ;;
+        *) die "$cmd takes no arguments: '$1'" $EXIT_INVALID_ARGS ;;
+    esac
+}
+
+# parse_dry_run CMD ARG...: DRY_RUN=true on -n, any other argument is refused
+parse_dry_run() {
+    local cmd="$1"
+    shift
+    DRY_RUN=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -n|--dry-run) DRY_RUN=true ;;
+            -h|--help) usage 0 ;;
+            *) die "$cmd: unknown argument '$1'" $EXIT_INVALID_ARGS ;;
+        esac
+        shift
+    done
+}
+
+# parse_select_options ARG...: SELECT_OLDER and SELECT_NEWER in days,
+# SELECT_FIRST and SELECT_LAST in records, from the options of the same name
+parse_select_options() {
+    SELECT_OLDER="" SELECT_NEWER="" SELECT_FIRST="" SELECT_LAST=""
+    local name
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --older|--newer|--first|--last)
+                [[ "${2:-}" =~ ^[0-9]+$ ]] || die "$1 needs a number." $EXIT_INVALID_ARGS
+                name="${1#--}"
+                printf -v "SELECT_${name^^}" '%s' "$2"
+                shift 2
                 ;;
-            -*)
-                die "$cmd: unknown option '$arg'" $EXIT_INVALID_ARGS
-                ;;
+            -h|--help) usage 0 ;;
+            *) die "list: unknown argument '$1'" $EXIT_INVALID_ARGS ;;
         esac
     done
+}
+
+# select_records: of the records "id<TAB>date..." read oldest first, print
+# those older than SELECT_OLDER and newer than SELECT_NEWER days, then
+# only the first SELECT_FIRST and the last SELECT_LAST of them
+select_records() {
+    local now older="" newer=""
+    now=$(date +%s)
+    if [ -n "$SELECT_OLDER" ]; then
+        older=$(date -d "@$((now - SELECT_OLDER * 86400))" +%Y-%m-%dT%H:%M:%S)
+    fi
+    if [ -n "$SELECT_NEWER" ]; then
+        newer=$(date -d "@$((now - SELECT_NEWER * 86400))" +%Y-%m-%dT%H:%M:%S)
+    fi
+    awk -F '\t' -v older="$older" -v newer="$newer" -v first="$SELECT_FIRST" -v last="$SELECT_LAST" '
+        (older == "" || $2 < older) && (newer == "" || $2 > newer) { kept[++n] = $0 }
+        END {
+            from = 1; to = n
+            if (first != "" && first + 0 < to) to = first + 0
+            if (last != "" && to - last + 1 > from) from = to - last + 1
+            for (i = from; i <= to; i++) print kept[i]
+        }'
+}
+
+# read_ids: IDS, the first field of every line on stdin that is not blank, once each
+read_ids() {
+    mapfile -t IDS < <(cut -f1 | awk 'NF && !seen[$0]++')
+}
+
+# require_known ID...: die unless every ID is a line of stdin
+require_known() {
+    local known id
+    local -a missing=()
+    known=$(cat)
+    for id in "$@"; do
+        grep -qxF -e "$id" <<<"$known" || missing+=("$id")
+    done
+    [ ${#missing[@]} -eq 0 ] || die "no such id: ${missing[*]}"
+}
+
+# compare_trees OLD NEW [RSYNC_OPTION...]: one record "path<TAB>added",
+# "removed" or "modified" per path whose content differs from OLD to NEW
+compare_trees() {
+    local old="$1" new="$2"
+    shift 2
+    rsync --dry-run --archive --checksum --delete --out-format='%i %n' "$@" "$new/" "$old/" |
+    awk '{
+        flags = substr($0, 1, 11); path = substr($0, 13); sub(/\/$/, "", path)
+        if (flags ~ /^\*deleting/) change = "removed"
+        else if (flags !~ /^[<>ch][fdLDS]/) next
+        else if (substr(flags, 3) == "+++++++++") change = "added"
+        else change = "modified"
+        print path "\t" change
+    }'
+}
+
+# create_in_parent OPTION...: run "create OPTION..." in the nearest
+# repository above REPO_ROOT, if there is one, its record going to stderr
+create_in_parent() {
+    local parent
+    [ "$REPO_ROOT" != / ] || return 0
+    parent=$(find_repo_root "$(dirname "$REPO_ROOT")" "$CONFIG") || return 0
+    say "creating in the parent repository $parent"
+    ( cd "$parent" && "$SCRIPT_PATH" create "$@" ) >&2
 }
