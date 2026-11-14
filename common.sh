@@ -28,11 +28,18 @@ say() {
 }
 
 # safe_name PATH: PATH as one file name, % written %25, / %2F and a newline
-# %0A, so that two paths never share a name
+# %0A, so that two paths never share a name; a name longer than 199 bytes
+# becomes its first 135 bytes, ~ and the SHA-256 of PATH, 200 bytes, which
+# leaves room under NAME_MAX for a suffix and no short name can equal
 safe_name() {
-    local name="${1//%/%25}"
+    local LC_ALL=C name
+    name="${1//%/%25}"
     name="${name//\//%2F}"
-    printf '%s\n' "${name//$'\n'/%0A}"
+    name="${name//$'\n'/%0A}"
+    if [ ${#name} -gt 199 ]; then
+        name="${name:0:135}~$(printf '%s' "$1" | sha256sum | cut -c1-64)"
+    fi
+    printf '%s\n' "$name"
 }
 
 # old_safe_name PATH: the name hlinkctl and dedupctl gave PATH, every !
