@@ -210,20 +210,66 @@ require_known() {
     [ ${#missing[@]} -eq 0 ] || die "no such id: ${missing[*]}"
 }
 
+# An awk function for every record printer: esc writes a backslash, tab or
+# newline in a path as \\, \t or \n, so that a record stays one line.
+AWK_ESCAPE='
+function esc(s,    out, i, c) {
+    if (s !~ /[\\\t\n]/) return s
+    out = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        out = out (c == "\\" ? "\\\\" : c == "\t" ? "\\t" : c == "\n" ? "\\n" : c)
+    }
+    return out
+}'
+
+# An awk program, run with LC_ALL=C, that turns the lines of rsync
+# --8-bit-output --out-format="%i %n" into records "path<TAB>change";
+# rsync writes a control character in a name as \#ooo.
+AWK_RSYNC='
+function unrsync(s,    out, i) {
+    if (index(s, "\\#") == 0) return s
+    out = ""
+    for (i = 1; i <= length(s); i++) {
+        if (substr(s, i, 2) == "\\#" && substr(s, i + 2, 3) ~ /^[0-7][0-7][0-7]$/) {
+            out = out sprintf("%c", substr(s, i + 2, 1) * 64 + substr(s, i + 3, 1) * 8 + substr(s, i + 4, 1))
+            i += 4
+        } else out = out substr(s, i, 1)
+    }
+    return out
+}
+{
+    flags = substr($0, 1, 11); name = substr($0, 13); sub(/\/$/, "", name)
+    if (flags ~ /^\*deleting/) change = "removed"
+    else if (flags !~ /^[<>ch][fdLDS]/) next
+    else if (substr(flags, 3) == "+++++++++") change = "added"
+    else change = "modified"
+    print esc(unrsync(name)) "\t" change
+}'
+
+# rsync_records RSYNC_ARGUMENT...: run rsync --dry-run with ARGUMENTs and
+# print a record "path<TAB>added|removed|modified" per change it would make
+rsync_records() {
+    rsync --dry-run --8-bit-output --out-format='%i %n' "$@" | LC_ALL=C awk "$AWK_ESCAPE$AWK_RSYNC"
+}
+
 # compare_trees OLD NEW [RSYNC_OPTION...]: one record "path<TAB>added",
-# "removed" or "modified" per path whose content differs from OLD to NEW
+# "removed" or "modified" per path whose content or type differs from OLD
+# to NEW; rsync shows a path whose type changed as new, so one OLD holds too
+# is modified
 compare_trees() {
-    local old="$1" new="$2"
+    local old="$1" new="$2" path change raw
     shift 2
-    rsync --dry-run --archive --checksum --delete --out-format='%i %n' "$@" "$new/" "$old/" |
-    awk '{
-        flags = substr($0, 1, 11); path = substr($0, 13); sub(/\/$/, "", path)
-        if (flags ~ /^\*deleting/) change = "removed"
-        else if (flags !~ /^[<>ch][fdLDS]/) next
-        else if (substr(flags, 3) == "+++++++++") change = "added"
-        else change = "modified"
-        print path "\t" change
-    }'
+    rsync_records --archive --checksum --delete "$@" "$new/" "$old/" |
+        while IFS=$'\t' read -r path change; do
+            if [ "$change" = added ]; then
+                printf -v raw '%b' "$path"
+                if [ -e "$old/$raw" ] || [ -L "$old/$raw" ]; then
+                    change=modified
+                fi
+            fi
+            printf '%s\t%s\n' "$path" "$change"
+        done
 }
 
 # create_in_parent OPTION...: run "create OPTION..." in the nearest
