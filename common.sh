@@ -54,11 +54,27 @@ storage_for() {
     printf '%s\n' "$new"
 }
 
-# open_log: log this run to $XDG_STATE_HOME/PROG/<REPO_ROOT as a name>.log
+# open_log: log this run to $XDG_STATE_HOME/PROG/<REPO_ROOT as a name>.log,
+# readable by the user only
 open_log() {
     local dir="${XDG_STATE_HOME:-$HOME/.local/state}/$PROG"
-    mkdir -p "$dir"
     LOG_FILE="$dir/$(safe_name "$REPO_ROOT").log"
+    ( umask 077 && mkdir -p "$dir" && : >>"$LOG_FILE" )
+    chmod 700 "$dir"
+    chmod 600 "$LOG_FILE"
+}
+
+# write_config FILE NAME=VALUE...: write the configuration FILE for
+# REPO_ROOT, every value quoted for the shell that sources it
+write_config() {
+    local file="$1" pair
+    shift
+    {
+        printf '# Backup repository configuration for %q\n' "$REPO_ROOT"
+        for pair in "$@"; do
+            printf '%s=%q\n' "${pair%%=*}" "${pair#*=}"
+        done
+    } >"$file"
 }
 
 # find_repo_root DIR NAME: the nearest directory at or above DIR holding NAME
