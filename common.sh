@@ -27,9 +27,31 @@ say() {
     fi
 }
 
-# safe_name PATH: PATH as one file name, every ! doubled and every / a !
+# safe_name PATH: PATH as one file name, % written %25, / %2F and a newline
+# %0A, so that two paths never share a name
 safe_name() {
+    local name="${1//%/%25}"
+    name="${name//\//%2F}"
+    printf '%s\n' "${name//$'\n'/%0A}"
+}
+
+# old_safe_name PATH: the name hlinkctl and dedupctl gave PATH, every !
+# doubled and every / a !, which two paths can share
+old_safe_name() {
     printf '%s\n' "$1" | sed 's/!/!!/g; s|/|!|g'
+}
+
+# storage_for ROOT DIR: the storage path under ROOT for the source DIR; dies
+# when ROOT holds storage under the old name of DIR, which may be DIR's own
+# or another directory's
+storage_for() {
+    local new old
+    new="$1/$(safe_name "$2")"
+    old="$1/$(old_safe_name "$2")"
+    if [ -e "$old" ] && [ ! -e "$new" ]; then
+        die "$old exists, named the old way, under which two directories can share one name. If it holds the backups of $2, set it in $2/$CONFIG by hand; if not, move it away."
+    fi
+    printf '%s\n' "$new"
 }
 
 # open_log: log this run to $XDG_STATE_HOME/PROG/<REPO_ROOT as a name>.log
