@@ -118,15 +118,16 @@ enter_repo() {
     require_config "$CONFIG" "$@"
 }
 
-# build_exclude_params borg|rsync: EXCLUDE_PARAMS from EXCLUDES, else DEFAULT_EXCLUDES
+# build_exclude_params borg|rsync: EXCLUDE_PATTERNS, the EXCLUDES or else
+# DEFAULT_EXCLUDES, and EXCLUDE_PARAMS, the options that leave them out
 build_exclude_params() {
     local pattern
-    local -a patterns=("${DEFAULT_EXCLUDES[@]}")
+    EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDES[@]}")
     if declare -p EXCLUDES &>/dev/null; then
-        patterns=("${EXCLUDES[@]}")
+        EXCLUDE_PATTERNS=("${EXCLUDES[@]}")
     fi
     EXCLUDE_PARAMS=()
-    for pattern in "${patterns[@]}"; do
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
         case "$1" in
             borg) EXCLUDE_PARAMS+=(--exclude "$pattern") ;;
             rsync) EXCLUDE_PARAMS+=(--exclude="$pattern") ;;
@@ -206,13 +207,13 @@ read_ids() {
     mapfile -t IDS < <(cut -f1 | awk 'NF && !seen[$0]++')
 }
 
-# require_known ID...: die unless every ID is a line of stdin
+# require_known ID...: die unless every ID is a line of stdin, compared byte by byte
 require_known() {
     local known id
     local -a missing=()
     known=$(cat)
     for id in "$@"; do
-        grep -qxF -e "$id" <<<"$known" || missing+=("$id")
+        LC_ALL=C grep -aqxF -e "$id" <<<"$known" || missing+=("$id")
     done
     [ ${#missing[@]} -eq 0 ] || die "no such id: ${missing[*]}"
 }
