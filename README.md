@@ -18,5 +18,5 @@ A tool's dispatcher sets `PROG`, `CONFIG` and `SCRIPT_PATH`, defines `usage`, an
 - `read_ids`, `require_known`: the ids `delete` reads on stdin, and the check that each names something
 - `rsync_records`, `compare_trees`: one record `path<TAB>added|removed|modified` per path an rsync dry run would change, or whose content or type differs between two trees; a backslash, tab or newline in a path is written `\\`, `\t` or `\n` (`AWK_ESCAPE`)
 - `create_in_parent`: run `create` in the repository above this one, if any, and return its status
-- `build_exclude_params`: `--exclude` flags for borg or rsync
-- `safe_name`, `storage_for`: a path as one file name, `%` written `%25`, `/` `%2F` and a newline `%0A`, so that two paths never share one; `storage_for` refuses when storage exists under the name hlinkctl and dedupctl used (`old_safe_name`), which two paths can share
+- `build_exclude_params`: the patterns to leave out (`EXCLUDE_PATTERNS`) and their `--exclude` flags for borg or rsync
+- `safe_name`, `storage_for`: a path as one file name, `%` written `%25`, `/` `%2F` and a newline `%0A`, so that two paths never share one, and a name over 199 bytes cut to 135 bytes, `~` and the SHA-256 of the path; `storage_for` refuses when storage exists under the name hlinkctl and dedupctl used (`old_safe_name`), which two paths can share
