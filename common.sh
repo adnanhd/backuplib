@@ -171,12 +171,14 @@ reject_options() {
 }
 
 # parse_select_options ARG...: SELECT_OLDER and SELECT_NEWER in days,
-# SELECT_FIRST and SELECT_LAST in records, from the options of the same name
+# SELECT_FIRST and SELECT_LAST in records, from the options of the same name,
+# and HUMAN=true with --human-readable
 parse_select_options() {
-    SELECT_OLDER="" SELECT_NEWER="" SELECT_FIRST="" SELECT_LAST=""
+    SELECT_OLDER="" SELECT_NEWER="" SELECT_FIRST="" SELECT_LAST="" HUMAN=false
     local name
     while [ $# -gt 0 ]; do
         case "$1" in
+            --human-readable) HUMAN=true; shift ;;
             --older|--newer|--first|--last)
                 [[ "${2:-}" =~ ^[0-9]+$ ]] || die "$1 needs a number." $EXIT_INVALID_ARGS
                 name="${1#--}"
@@ -238,6 +240,17 @@ function esc(s,    out, i, c) {
         out = out (c == "\\" ? "\\\\" : c == "\t" ? "\\t" : c == "\n" ? "\\n" : c)
     }
     return out
+}'
+
+# An awk function: size(N), N bytes as a record shows them, with HUMAN=true
+# in the environment in K, M, G, T, as du -h writes them
+AWK_HUMAN='
+function size(n,    u, i) {
+    if (ENVIRON["HUMAN"] != "true" || n == "" || n + 0 < 1024) return n
+    n += 0
+    split("K M G T P E", u, " ")
+    for (i = 0; n >= 1024 && i < 6; i++) n /= 1024
+    return (n < 10 ? sprintf("%.1f", n) : sprintf("%d", n + 0.5)) u[i]
 }'
 
 # escaped TEXT: TEXT written the way esc writes a path in a record
