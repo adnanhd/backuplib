@@ -13,7 +13,8 @@ A tool's dispatcher sets `PROG`, `CONFIG` and `SCRIPT_PATH`, defines `usage`, an
 - `die`, `say`: a message on stderr; `say` also appends it to the log `open_log` opened under `$XDG_STATE_HOME/PROG/`, mode 600 in a 700 directory
 - `enter_repo`: change into the nearest directory holding `CONFIG` and read it (`find_repo_root`, `require_config`)
 - `write_config`: write a configuration with every value quoted for the shell (`printf %q`)
-- `parse_select_options`, `reject_options`: option parsing for the `list` filters and commands without arguments
+- `parse_select_options`, `reject_options`: option parsing for the `list` filters and `--human-readable` (`HUMAN=true`), and for commands without arguments
+- `size` (`AWK_HUMAN`): an awk function that writes a byte count as a record shows it, in K, M, G, T as `du -h` does when `HUMAN=true`
 - `select_records`: keep the records `id<TAB>date...`, the date `YYYY-MM-DD HH:MM:SS`, older or newer than N days, then the first or last N
 - `read_ids`: the ids `delete` is given, or else reads on stdin; both at once, or neither with a terminal on stdin, end the run with status 2
 - `escaped`, `rsync_records`, `compare_trees`: one record `path<TAB>added|removed|modified` per path an rsync dry run would change, or whose content or type differs between two trees; a backslash, tab or newline in a path is written `\\`, `\t` or `\n` (`AWK_ESCAPE`)
