@@ -1,14 +1,14 @@
 # common.sh - shared functions of archivectl and snapshotctl
 #
 # Sourced by each tool's dispatcher, which sets PROG (the tool's name),
-# CONFIG (its configuration file) and SCRIPT_PATH, and defines usage; each
-# command's module defines show_help, its own help.
+# CONFIG (its configuration file), IGNORE (its ignore file) and SCRIPT_PATH,
+# and defines usage; each command's module defines show_help, its own help.
 
 readonly EXIT_ERROR=1
 readonly EXIT_INVALID_ARGS=2
 readonly EXIT_CONFIG_ERROR=3
 
-# Patterns left out of a backup when the configuration sets no EXCLUDES
+# Patterns left out of a backup when the source has no ignore file
 readonly DEFAULT_EXCLUDES=(".cache" "tmp" "__pycache__")
 
 # Set by open_log only, so that a dry run never writes a log
@@ -142,14 +142,48 @@ enter_repo() {
     require_config "$CONFIG" "$@"
 }
 
-# build_exclude_params borg|rsync: EXCLUDE_PATTERNS, the EXCLUDES or else
-# DEFAULT_EXCLUDES, and EXCLUDE_PARAMS, the options that leave them out
-build_exclude_params() {
-    local pattern
-    EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDES[@]}")
-    if declare -p EXCLUDES &>/dev/null; then
-        EXCLUDE_PATTERNS=("${EXCLUDES[@]}")
+# ignore_lines: the patterns of REPO_ROOT/IGNORE, one a line as written,
+# blank lines and lines starting with # left out; DEFAULT_EXCLUDES when the
+# source has no ignore file
+ignore_lines() {
+    if [ -f "$REPO_ROOT/$IGNORE" ]; then
+        sed -e 's/[[:space:]]*$//' -e '/^$/d' -e '/^#/d' "$REPO_ROOT/$IGNORE"
+    else
+        printf '%s\n' "${DEFAULT_EXCLUDES[@]}"
     fi
+}
+
+# ignore_pattern borg|rsync LINE: LINE of an ignore file as the tool's
+# pattern, read as .gitignore reads it: a pattern with no / matches a name
+# at any depth, one with a / at the start or inside matches from the
+# source's top, a trailing / is dropped for borg, which cannot say
+# directory only; a borg pattern with its style prefix (sh:, fm:, re:,
+# pp:, pf:) is passed as it is
+ignore_pattern() {
+    local line="$2" bare
+    case "$1:$line" in
+        borg:sh:*|borg:fm:*|borg:re:*|borg:pp:*|borg:pf:*) printf '%s\n' "$line"; return ;;
+    esac
+    bare="${line%/}"
+    case "$1:$bare" in
+        borg:/*) printf 'sh:%s\n' "${bare#/}" ;;
+        borg:*/*) printf 'sh:%s\n' "$bare" ;;
+        borg:*) printf 'sh:**/%s\n' "$bare" ;;
+        rsync:/*) printf '%s\n' "$line" ;;
+        rsync:*/*) printf '/%s\n' "$line" ;;
+        rsync:*) printf '%s\n' "$line" ;;
+    esac
+}
+
+# build_exclude_params borg|rsync: EXCLUDE_PATTERNS, the lines of the ignore
+# file (or DEFAULT_EXCLUDES) as the tool's patterns, and EXCLUDE_PARAMS,
+# the options that leave them out
+build_exclude_params() {
+    local line pattern
+    EXCLUDE_PATTERNS=()
+    while IFS= read -r line; do
+        EXCLUDE_PATTERNS+=("$(ignore_pattern "$1" "$line")")
+    done < <(ignore_lines)
     EXCLUDE_PARAMS=()
     for pattern in "${EXCLUDE_PATTERNS[@]}"; do
         case "$1" in
