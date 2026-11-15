@@ -32,7 +32,7 @@ say() {
 # leading / dropped, every other / written __, % as %25, a newline as %0A,
 # and an _ that begins or ends a component or stands next to another _ as
 # %5F, so that __ always stands for a /; / itself is %2F, and a ! that
-# begins the name %21, so that no name is one old_safe_name gives. A name longer
+# begins the name %21. A name longer
 # than 199 bytes becomes its first 135 bytes, ~ and the SHA-256 of PATH,
 # 200 bytes, which leaves room under NAME_MAX for a suffix and no short
 # name can equal.
@@ -60,16 +60,6 @@ safe_name() {
     shorten "$name" "$1"
 }
 
-# encoded_name PATH: the name earlier versions gave PATH, % written %25, /
-# %2F and a newline %0A, shortened as safe_name shortens
-encoded_name() {
-    local LC_ALL=C name
-    name="${1//%/%25}"
-    name="${name//\//%2F}"
-    name="${name//$'\n'/%0A}"
-    shorten "$name" "$1"
-}
-
 # shorten NAME PATH: NAME, or past 199 bytes its first 135 bytes, ~ and the
 # SHA-256 of PATH
 shorten() {
@@ -80,27 +70,9 @@ shorten() {
     printf '%s\n' "$name"
 }
 
-# old_safe_name PATH: the name hlinkctl and dedupctl gave PATH, every !
-# doubled and every / a !, which two paths can share
-old_safe_name() {
-    printf '%s\n' "$1" | sed 's/!/!!/g; s|/|!|g'
-}
-
-# storage_for ROOT DIR: the storage path under ROOT for the source DIR,
-# named by safe_name, or by encoded_name when only that one exists; dies
-# when ROOT holds storage under the name hlinkctl and dedupctl gave DIR,
-# which may be DIR's own or another directory's
+# storage_for ROOT DIR: the storage path under ROOT for the source DIR, named by safe_name
 storage_for() {
-    local new encoded old
-    new="$1/$(safe_name "$2")"
-    encoded="$1/$(encoded_name "$2")"
-    old="$1/$(old_safe_name "$2")"
-    if [ ! -e "$new" ] && [ -e "$encoded" ]; then
-        new="$encoded"
-    elif [ ! -e "$new" ] && [ -e "$old" ]; then
-        die "$old exists, named the old way, under which two directories can share one name. If it holds the backups of $2, set it in $2/$CONFIG by hand; if not, move it away."
-    fi
-    printf '%s\n' "$new"
+    printf '%s\n' "$1/$(safe_name "$2")"
 }
 
 # default_root KIND OLD: where storage goes when the environment names no
